@@ -39,20 +39,48 @@ async function fetchRealEscavadorData(cnpj: string): Promise<ContageProcessosRes
     if (Array.isArray(processos) && processos.length > 0) {
       console.log(`✅ ${processos.length} processos encontrados para análise`)
 
-      // Conta processos trabalhistas
-      const processosTrabalhistasCount = processos.filter((processo: any) => {
-        const area = (processo.area || processo.tribunal || processo.vara || "").toString().toUpperCase()
+      // Função melhorada para detectar processos trabalhistas
+      const isProcessoTrabalhista = (processo: any): boolean => {
+        const area = (processo.area || "").toString().toUpperCase()
+        const tribunal = (processo.tribunal || "").toString().toUpperCase()
+        const vara = (processo.vara || "").toString().toUpperCase()
         const classe = (processo.classe || "").toString().toUpperCase()
         const assunto = (processo.assunto || "").toString().toUpperCase()
+        const numero = (processo.numero || processo.numero_cnj || "").toString().toUpperCase()
 
-        return (
-          area.includes("TRABALHISTA") ||
-          area.includes("TRABALHO") ||
-          area.includes("TRT") ||
-          classe.includes("TRABALHISTA") ||
-          assunto.includes("TRABALHISTA")
-        )
-      }).length
+        // Palavras-chave que indicam processo trabalhista
+        const palavrasChaveTrabalhista = [
+          "TRABALHISTA",
+          "TRABALHO",
+          "TRT",
+          "TRABALHADOR",
+          "EMPREGADO",
+          "RESCISÃO",
+          "FGTS",
+          "HORAS EXTRAS",
+          "ADICIONAL",
+          "SALÁRIO",
+          "VERBAS RESCISÓRIAS",
+          "INSS",
+          "PIS",
+          "VALE TRANSPORTE",
+          "FÉRIAS",
+          "DÉCIMO TERCEIRO",
+          "13º",
+          "AVISO PRÉVIO",
+          "INSALUBRIDADE",
+          "PERICULOSIDADE",
+          "NOTURNO",
+        ]
+
+        // Verifica se alguma palavra-chave está presente
+        const textoCompleto = `${area} ${tribunal} ${vara} ${classe} ${assunto} ${numero}`
+
+        return palavrasChaveTrabalhista.some((palavra) => textoCompleto.includes(palavra))
+      }
+
+      // Conta processos trabalhistas
+      const processosTrabalhistasCount = processos.filter(isProcessoTrabalhista).length
 
       const percentual = (processosTrabalhistasCount / processos.length) * 100
 

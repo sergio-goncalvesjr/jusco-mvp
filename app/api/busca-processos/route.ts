@@ -21,25 +21,77 @@ interface EscavadorProcesso {
   instancia?: string
 }
 
-// Função para verificar se é processo trabalhista
+// Função melhorada para verificar se é processo trabalhista
 function isProcessoTrabalhista(processo: EscavadorProcesso): boolean {
   const area = (processo.area || "").toString().toUpperCase()
   const tribunal = (processo.tribunal || "").toString().toUpperCase()
   const vara = (processo.vara || "").toString().toUpperCase()
   const classe = (processo.classe || "").toString().toUpperCase()
   const assunto = (processo.assunto || "").toString().toUpperCase()
+  const numero = (processo.numero || processo.numero_cnj || "").toString().toUpperCase()
 
-  return (
-    area.includes("TRABALHISTA") ||
-    area.includes("TRABALHO") ||
-    tribunal.includes("TRT") ||
-    tribunal.includes("TRABALHISTA") ||
-    vara.includes("TRABALHO") ||
-    vara.includes("TRABALHISTA") ||
-    classe.includes("TRABALHISTA") ||
-    assunto.includes("TRABALHISTA") ||
-    assunto.includes("TRABALHO")
-  )
+  // Palavras-chave que indicam processo trabalhista
+  const palavrasChaveTrabalhista = [
+    // Tribunais e varas
+    "TRT",
+    "TRABALHISTA",
+    "TRABALHO",
+    "VARA DO TRABALHO",
+
+    // Tipos de ação
+    "RECLAMAÇÃO TRABALHISTA",
+    "AÇÃO TRABALHISTA",
+    "DISSÍDIO",
+
+    // Assuntos trabalhistas
+    "RESCISÃO",
+    "FGTS",
+    "HORAS EXTRAS",
+    "ADICIONAL NOTURNO",
+    "ADICIONAL DE INSALUBRIDADE",
+    "ADICIONAL DE PERICULOSIDADE",
+    "VERBAS RESCISÓRIAS",
+    "AVISO PRÉVIO",
+    "FÉRIAS",
+    "DÉCIMO TERCEIRO",
+    "13º SALÁRIO",
+    "SALÁRIO",
+    "EQUIPARAÇÃO SALARIAL",
+    "DANOS MORAIS TRABALHISTAS",
+    "ACIDENTE DE TRABALHO",
+    "DOENÇA OCUPACIONAL",
+    "ESTABILIDADE",
+    "REINTEGRAÇÃO",
+    "VALE TRANSPORTE",
+    "VALE REFEIÇÃO",
+    "PLR",
+    "PARTICIPAÇÃO NOS LUCROS",
+    "INTERVALO INTRAJORNADA",
+    "SOBREAVISO",
+    "PRONTIDÃO",
+    "TRABALHO NOTURNO",
+    "EMPREGADO",
+    "TRABALHADOR",
+    "CLT",
+    "CONSOLIDAÇÃO DAS LEIS DO TRABALHO",
+    "CARTEIRA DE TRABALHO",
+    "CTPS",
+    "INSS TRABALHISTA",
+    "PIS",
+    "PASEP",
+  ]
+
+  // Verifica se alguma palavra-chave está presente
+  const textoCompleto = `${area} ${tribunal} ${vara} ${classe} ${assunto} ${numero}`
+
+  const isTrabalhistaByKeyword = palavrasChaveTrabalhista.some((palavra) => textoCompleto.includes(palavra))
+
+  // Log para debug (remover em produção)
+  if (isTrabalhistaByKeyword) {
+    console.log(`✅ Processo trabalhista detectado: ${numero} - ${assunto}`)
+  }
+
+  return isTrabalhistaByKeyword
 }
 
 // Função para normalizar dados do processo
