@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
+import axios from "axios"
 
 // Interface para os resultados da contagem
 interface ContageProcessosResult {
@@ -16,102 +17,72 @@ async function fetchRealEscavadorData(cnpj: string): Promise<ContageProcessosRes
   try {
     console.log(`🔍 Buscando estatísticas reais para CNPJ: ${cnpj}`)
 
-    const endpoints = [
-      {
-        url: `https://api.escavador.com/api/v1/lawsuits/search`,
-        method: "POST",
-        body: { cnpj: cnpj, page: 1, per_page: 1000 },
+    // Chamada real à API do Escavador
+    const escavadorResponse = await axios.get(`https://api.escavador.com/api/v1/pessoas/juridica/${cnpj}/processos`, {
+      headers: {
+        Authorization: `Bearer ${process.env.ESCAVADOR_TOKEN}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
       },
-      {
-        url: `https://api.escavador.com/api/v1/lawsuits`,
-        method: "GET",
-        params: `?cnpj=${cnpj}&page=1&per_page=1000`,
-      },
-    ]
+      timeout: 15000,
+    })
 
-    for (const endpoint of endpoints) {
-      try {
-        const url = endpoint.method === "GET" ? `${endpoint.url}${endpoint.params || ""}` : endpoint.url
-        console.log(`🌐 Testando: ${endpoint.method} ${url}`)
+    console.log(`📊 Resposta recebida, status: ${escavadorResponse.status}`)
 
-        const requestOptions: RequestInit = {
-          method: endpoint.method,
-          headers: {
-            Authorization: `Bearer ${process.env.ESCAVADOR_TOKEN}`,
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-        }
+    // Extrair processos da resposta
+    const processos =
+      escavadorResponse.data.dados ||
+      escavadorResponse.data.data ||
+      escavadorResponse.data.processos ||
+      escavadorResponse.data
 
-        if (endpoint.method === "POST" && endpoint.body) {
-          requestOptions.body = JSON.stringify(endpoint.body)
-        }
+    if (Array.isArray(processos) && processos.length > 0) {
+      console.log(`✅ ${processos.length} processos encontrados para análise`)
 
-        const response = await fetch(url, requestOptions)
+      // Conta processos trabalhistas
+      const processosTrabalhistasCount = processos.filter((processo: any) => {
+        const area = (processo.area || processo.tribunal || processo.vara || "").toString().toUpperCase()
+        const classe = (processo.classe || "").toString().toUpperCase()
+        const assunto = (processo.assunto || "").toString().toUpperCase()
 
-        if (response.ok) {
-          const data = await response.json()
-          console.log(`📊 Resposta recebida, status: ${response.status}`)
+        return (
+          area.includes("TRABALHISTA") ||
+          area.includes("TRABALHO") ||
+          area.includes("TRT") ||
+          classe.includes("TRABALHISTA") ||
+          assunto.includes("TRABALHISTA")
+        )
+      }).length
 
-          // Tenta diferentes estruturas de resposta
-          const processos = data.data || data.processos || data.results || data.lawsuits || []
+      const percentual = (processosTrabalhistasCount / processos.length) * 100
 
-          if (Array.isArray(processos) && processos.length > 0) {
-            console.log(`✅ ${processos.length} processos encontrados para análise`)
+      console.log(
+        `📈 Estatísticas: ${processos.length} total, ${processosTrabalhistasCount} trabalhistas (${percentual.toFixed(1)}%)`,
+      )
 
-            // Conta processos trabalhistas
-            const processosTrabalhistasCount = processos.filter((processo: any) => {
-              const area = (processo.area || processo.tribunal || processo.vara || "").toString().toUpperCase()
-              const classe = (processo.classe || "").toString().toUpperCase()
-              const assunto = (processo.assunto || "").toString().toUpperCase()
+      return {
+        error: false,
+        cnpj,
+        total_processos: processos.length,
+        processos_trabalhistas: processosTrabalhistasCount,
+        percentual_trabalhista: Math.round(percentual * 100) / 100,
+      }
+    } else if (escavadorResponse.data && typeof escavadorResponse.data === "object") {
+      // API retornou dados mas sem array de processos
+      const total = escavadorResponse.data.total || escavadorResponse.data.count || 0
+      console.log(`ℹ️ API retornou total de ${total} processos sem detalhes`)
 
-              return (
-                area.includes("TRABALHISTA") ||
-                area.includes("TRABALHO") ||
-                area.includes("TRT") ||
-                classe.includes("TRABALHISTA") ||
-                assunto.includes("TRABALHISTA")
-              )
-            }).length
-
-            const percentual = (processosTrabalhistasCount / processos.length) * 100
-
-            console.log(
-              `📈 Estatísticas: ${processos.length} total, ${processosTrabalhistasCount} trabalhistas (${percentual.toFixed(1)}%)`,
-            )
-
-            return {
-              error: false,
-              cnpj,
-              total_processos: processos.length,
-              processos_trabalhistas: processosTrabalhistasCount,
-              percentual_trabalhista: Math.round(percentual * 100) / 100,
-            }
-          } else if (data.total !== undefined || data.count !== undefined) {
-            // API retornou contagem mas sem dados detalhados
-            const total = data.total || data.count || 0
-            console.log(`ℹ️ API retornou total de ${total} processos sem detalhes`)
-
-            return {
-              error: false,
-              cnpj,
-              total_processos: total,
-              processos_trabalhistas: Math.floor(total * 0.3), // Estimativa de 30%
-              percentual_trabalhista: 30,
-            }
-          }
-        } else {
-          const errorText = await response.text()
-          console.log(`❌ Erro na API (${response.status}): ${errorText.substring(0, 200)}`)
-        }
-      } catch (endpointError) {
-        console.error(`❌ Erro no endpoint ${endpoint.url}:`, endpointError)
-        continue
+      return {
+        error: false,
+        cnpj,
+        total_processos: total,
+        processos_trabalhistas: Math.floor(total * 0.3), // Estimativa de 30%
+        percentual_trabalhista: 30,
       }
     }
 
     // Se chegou aqui, não encontrou dados válidos
-    console.log("⚠️ Nenhum endpoint retornou dados válidos")
+    console.log("⚠️ API não retornou dados válidos")
     return {
       error: false,
       cnpj,
@@ -119,8 +90,12 @@ async function fetchRealEscavadorData(cnpj: string): Promise<ContageProcessosRes
       processos_trabalhistas: 0,
       percentual_trabalhista: 0,
     }
-  } catch (error) {
-    console.error("❌ Erro ao buscar dados reais:", error)
+  } catch (error: any) {
+    console.error("❌ Erro ao buscar dados reais:", error.message)
+    if (error.response) {
+      console.error(`❌ Status: ${error.response.status}`)
+      console.error(`❌ Dados do erro:`, error.response.data)
+    }
     throw error
   }
 }
