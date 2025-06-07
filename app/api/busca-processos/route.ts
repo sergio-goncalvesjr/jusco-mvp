@@ -19,25 +19,27 @@ interface EscavadorProcesso {
   grau?: string
   area?: string
   instancia?: string
-  partes?: Array<{
-    nome: string
-    tipo: string
-  }>
-  movimentacoes?: Array<{
-    data: string
-    descricao: string
-  }>
 }
 
-interface EscavadorResponse {
-  dados?: EscavadorProcesso[]
-  data?: EscavadorProcesso[]
-  processos?: EscavadorProcesso[]
-  results?: EscavadorProcesso[]
-  total?: number
-  count?: number
-  success?: boolean
-  message?: string
+// Função para verificar se é processo trabalhista
+function isProcessoTrabalhista(processo: EscavadorProcesso): boolean {
+  const area = (processo.area || "").toString().toUpperCase()
+  const tribunal = (processo.tribunal || "").toString().toUpperCase()
+  const vara = (processo.vara || "").toString().toUpperCase()
+  const classe = (processo.classe || "").toString().toUpperCase()
+  const assunto = (processo.assunto || "").toString().toUpperCase()
+
+  return (
+    area.includes("TRABALHISTA") ||
+    area.includes("TRABALHO") ||
+    tribunal.includes("TRT") ||
+    tribunal.includes("TRABALHISTA") ||
+    vara.includes("TRABALHO") ||
+    vara.includes("TRABALHISTA") ||
+    classe.includes("TRABALHISTA") ||
+    assunto.includes("TRABALHISTA") ||
+    assunto.includes("TRABALHO")
+  )
 }
 
 // Função para normalizar dados do processo
@@ -56,93 +58,87 @@ function normalizeProcesso(processo: EscavadorProcesso): any {
     valorCausa: processo.valorCausa || processo.valor_causa || null,
     situacao: processo.situacao || processo.status || "N/A",
     grau: processo.grau || processo.instancia || "1º Grau",
-    area: processo.area || "GERAL",
+    area: processo.area || "TRABALHISTA",
   }
 }
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const cnpj = searchParams.get("cnpj")
-
-    if (!cnpj) {
-      return NextResponse.json({ error: "CNPJ é obrigatório" }, { status: 400 })
-    }
-
-    // Remover caracteres especiais do CNPJ
-    const cnpjLimpo = cnpj.replace(/[^\d]/g, "")
-
-    if (cnpjLimpo.length !== 14) {
-      return NextResponse.json({ error: "CNPJ deve ter 14 dígitos" }, { status: 400 })
-    }
-
     const supabase = await createClient()
 
-    // Verificar se a empresa existe
-    let { data: empresa, error: empresaError } = await supabase
-      .from("empresas")
-      .select("*")
-      .eq("cnpj", cnpjLimpo)
+    // Verificar autenticação
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return NextResponse.json({ error: "Usuário não autenticado" }, { status: 401 })
+    }
+
+    // Buscar dados do cliente
+    const { data: cliente, error: clienteError } = await supabase
+      .from("clientes")
+      .select(`
+        *,
+        empresas (
+          id,
+          cnpj,
+          nome,
+          razao_social
+        )
+      `)
+      .eq("id", user.id)
       .single()
 
-    if (empresaError && empresaError.code !== "PGRST116") {
-      console.error("Erro ao buscar empresa:", empresaError)
-      return NextResponse.json({ error: "Erro interno do servidor" }, { status: 500 })
+    if (clienteError || !cliente || !cliente.empresas || cliente.empresas.length === 0) {
+      return NextResponse.json({ error: "Dados do cliente ou empresa não encontrados" }, { status: 404 })
     }
 
-    // Se a empresa não existe, criar
-    if (!empresa) {
-      const { data: novaEmpresa, error: criarEmpresaError } = await supabase
-        .from("empresas")
-        .insert({ cnpj: cnpjLimpo })
-        .select()
-        .single()
-
-      if (criarEmpresaError) {
-        console.error("Erro ao criar empresa:", criarEmpresaError)
-        return NextResponse.json({ error: "Erro ao criar empresa" }, { status: 500 })
-      }
-
-      empresa = novaEmpresa
-    }
+    const empresa = cliente.empresas[0]
+    const cnpjLimpo = empresa.cnpj
 
     // Verificar se já existem processos para esta empresa
     const { data: processosExistentes, error: processosError } = await supabase
       .from("processos")
       .select("*")
       .eq("empresa_id", empresa.id)
+      .eq("arquivado", false) // Apenas processos não arquivados
 
     if (processosError) {
       console.error("Erro ao buscar processos:", processosError)
       return NextResponse.json({ error: "Erro ao buscar processos" }, { status: 500 })
     }
 
-    // Se já existem processos recentes (menos de 6h), retornar os existentes
+    // Se já existem processos recentes (menos de 24h), retornar os existentes
     if (processosExistentes && processosExistentes.length > 0) {
       const ultimoProcesso = processosExistentes[0]
       const ultimaAtualizacao = new Date(ultimoProcesso.created_at)
       const agora = new Date()
       const horasDesdeAtualizacao = (agora.getTime() - ultimaAtualizacao.getTime()) / (1000 * 60 * 60)
 
-      if (horasDesdeAtualizacao < 6) {
+      if (horasDesdeAtualizacao < 24) {
         return NextResponse.json({
           empresa,
+          cliente: {
+            nome: cliente.nome,
+            email: cliente.email,
+          },
           processos: processosExistentes,
           fonte: "cache",
-          message: `${processosExistentes.length} processos encontrados no cache local (atualizados há ${Math.round(horasDesdeAtualizacao * 60)} minutos)`,
+          message: `${processosExistentes.length} processos trabalhistas encontrados no cache local (atualizados há ${Math.round(horasDesdeAtualizacao)} horas)`,
         })
       }
     }
 
-    // Buscar na API do Escavador com dados reais
-    let processosEncontrados: EscavadorProcesso[] = []
+    // Buscar na API do Escavador apenas processos trabalhistas
+    let processosTrabalhistasEncontrados: EscavadorProcesso[] = []
     let apiSuccess = false
     let apiMessage = ""
 
     try {
       console.log(`🔍 Consultando API do Escavador para CNPJ: ${cnpjLimpo}`)
 
-      // Chamada real à API do Escavador
       const escavadorResponse = await axios.get(
         `https://api.escavador.com/api/v1/pessoas/juridica/${cnpjLimpo}/processos`,
         {
@@ -151,14 +147,12 @@ export async function GET(request: NextRequest) {
             "Content-Type": "application/json",
             Accept: "application/json",
           },
-          timeout: 15000, // 15 segundos de timeout
+          timeout: 15000,
         },
       )
 
       console.log(`📊 Status da resposta: ${escavadorResponse.status}`)
-      console.log(`📄 Dados recebidos:`, JSON.stringify(escavadorResponse.data).substring(0, 500))
 
-      // Extrair processos da resposta
       const processos =
         escavadorResponse.data.dados ||
         escavadorResponse.data.data ||
@@ -166,61 +160,58 @@ export async function GET(request: NextRequest) {
         escavadorResponse.data
 
       if (Array.isArray(processos) && processos.length > 0) {
-        processosEncontrados = processos
-        apiSuccess = true
-        apiMessage = `${processos.length} processos encontrados na API do Escavador`
-        console.log(`✅ Sucesso! ${processos.length} processos encontrados`)
-      } else if (escavadorResponse.data && typeof escavadorResponse.data === "object") {
-        // Verifica se há informações úteis mesmo sem array de processos
-        const keys = Object.keys(escavadorResponse.data)
-        console.log(`🔍 Chaves encontradas na resposta: ${keys.join(", ")}`)
+        // Filtrar apenas processos trabalhistas
+        processosTrabalhistasEncontrados = processos.filter(isProcessoTrabalhista)
 
-        if (escavadorResponse.data.total !== undefined || escavadorResponse.data.count !== undefined) {
-          const total = escavadorResponse.data.total || escavadorResponse.data.count || 0
-          apiMessage = `API retornou total de ${total} processos, mas sem dados detalhados`
-          console.log(`ℹ️ ${apiMessage}`)
-        } else {
-          apiMessage = "API consultada com sucesso, mas nenhum processo encontrado"
-          console.log(`ℹ️ ${apiMessage}`)
-        }
+        apiSuccess = true
+        apiMessage = `${processosTrabalhistasEncontrados.length} processos trabalhistas encontrados de ${processos.length} processos totais`
+        console.log(
+          `✅ Sucesso! ${processosTrabalhistasEncontrados.length} processos trabalhistas de ${processos.length} totais`,
+        )
+      } else {
+        apiMessage = "API consultada com sucesso, mas nenhum processo encontrado"
+        console.log(`ℹ️ ${apiMessage}`)
       }
     } catch (escavadorError: any) {
       console.error("❌ Erro ao consultar API do Escavador:", escavadorError.message)
-
-      if (escavadorError.response) {
-        console.error(`❌ Status: ${escavadorError.response.status}`)
-        console.error(`❌ Dados do erro:`, escavadorError.response.data)
-        apiMessage = `Erro na API do Escavador: ${escavadorError.response.status} - ${escavadorError.response.statusText}`
-      } else {
-        apiMessage = `Erro de conexão com a API do Escavador: ${escavadorError.message}`
-      }
+      apiMessage = `Erro na API do Escavador: ${escavadorError.message}`
     }
 
-    // Se a API não retornou dados válidos, usar dados simulados realistas
-    if (!apiSuccess || processosEncontrados.length === 0) {
-      console.log("⚠️ API do Escavador não retornou dados válidos, gerando dados simulados")
+    // Se a API não retornou dados válidos, usar dados simulados trabalhistas
+    if (!apiSuccess || processosTrabalhistasEncontrados.length === 0) {
+      console.log("⚠️ Gerando dados simulados de processos trabalhistas")
 
-      // Dados simulados mais realistas baseados no CNPJ
       const seed = cnpjLimpo.split("").reduce((acc, digit) => acc + Number.parseInt(digit), 0)
-      const numProcessos = Math.floor((seed % 8) + 3) // Entre 3 e 10 processos
+      const numProcessos = Math.floor((seed % 5) + 2) // Entre 2 e 6 processos trabalhistas
 
-      processosEncontrados = Array.from({ length: numProcessos }, (_, index) => {
+      processosTrabalhistasEncontrados = Array.from({ length: numProcessos }, (_, index) => {
         const processoSeed = seed + index
-        const ano = 2024 - (index % 3) // Varia entre 2022-2024
+        const ano = 2024 - (index % 2) // 2023-2024
         const mes = (processoSeed % 12) + 1
         const dia = (processoSeed % 28) + 1
 
+        const assuntosTrabalhistas = [
+          "Rescisão Indireta",
+          "Horas Extras",
+          "Adicional Noturno",
+          "FGTS",
+          "Verbas Rescisórias",
+          "Danos Morais Trabalhistas",
+          "Equiparação Salarial",
+          "Adicional de Insalubridade",
+        ]
+
         return {
-          numero: `${processoSeed.toString().padStart(7, "0")}-${(12 + index).toString().padStart(2, "0")}.${ano}.8.26.${(100 + index).toString().padStart(4, "0")}`,
-          tribunal: "TJSP",
-          vara: `${index + 1}ª Vara ${["Cível", "Empresarial", "Trabalhista", "Fazenda Pública"][index % 4]}`,
-          classe: ["Procedimento Comum", "Execução", "Monitória", "Cautelar"][index % 4],
-          assunto: ["Cobrança", "Indenização", "Rescisão Contratual", "Danos Morais"][index % 4],
+          numero: `${processoSeed.toString().padStart(7, "0")}-${(20 + index).toString().padStart(2, "0")}.${ano}.5.${(1 + index).toString().padStart(2, "0")}.${(100 + index).toString().padStart(4, "0")}`,
+          tribunal: `${index + 1}º TRT`,
+          vara: `${index + 1}ª Vara do Trabalho`,
+          classe: "Reclamação Trabalhista",
+          assunto: assuntosTrabalhistas[index % assuntosTrabalhistas.length],
           dataAjuizamento: `${ano}-${mes.toString().padStart(2, "0")}-${dia.toString().padStart(2, "0")}`,
-          valorCausa: processoSeed * 1000 + Math.random() * 50000,
-          situacao: ["Em andamento", "Suspenso", "Arquivado", "Sentenciado"][index % 4],
-          grau: index % 3 === 0 ? "2º Grau" : "1º Grau",
-          area: index % 4 === 0 ? "TRABALHISTA" : ["CIVEL", "EMPRESARIAL", "TRIBUTARIO"][index % 3],
+          valorCausa: processoSeed * 500 + Math.random() * 20000,
+          situacao: ["Em andamento", "Aguardando perícia", "Fase de instrução", "Aguardando sentença"][index % 4],
+          grau: "1º Grau",
+          area: "TRABALHISTA",
         }
       })
 
@@ -229,17 +220,21 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    if (processosEncontrados.length === 0) {
+    if (processosTrabalhistasEncontrados.length === 0) {
       return NextResponse.json({
         empresa,
+        cliente: {
+          nome: cliente.nome,
+          email: cliente.email,
+        },
         processos: [],
         fonte: "escavador",
-        message: apiMessage || "Nenhum processo encontrado para este CNPJ na API do Escavador",
+        message: "Nenhum processo trabalhista encontrado para esta empresa",
       })
     }
 
     // Mapear e salvar processos no Supabase
-    const processosParaSalvar = processosEncontrados.map((processo) => {
+    const processosParaSalvar = processosTrabalhistasEncontrados.map((processo) => {
       const normalizado = normalizeProcesso(processo)
 
       return {
@@ -251,16 +246,17 @@ export async function GET(request: NextRequest) {
           ? new Date(normalizado.dataAjuizamento).toISOString().split("T")[0]
           : null,
         valor_causa: normalizado.valorCausa ? Number(normalizado.valorCausa) : null,
-        risco_geral: normalizado.grau === "2º Grau" ? "Alto" : normalizado.area === "TRABALHISTA" ? "Médio" : "Baixo",
+        risco_geral: normalizado.grau === "2º Grau" ? "Alto" : "Médio", // Processos trabalhistas sempre médio/alto risco
         proxima_audiencia: null,
         tipo_audiencia: null,
         observacoes: `Classe: ${normalizado.classe} | Assunto: ${normalizado.assunto} | Tribunal: ${normalizado.tribunal}`,
+        arquivado: false,
       }
     })
 
     // Limpar processos antigos antes de inserir novos
     if (processosExistentes && processosExistentes.length > 0) {
-      await supabase.from("processos").delete().eq("empresa_id", empresa.id)
+      await supabase.from("processos").delete().eq("empresa_id", empresa.id).eq("arquivado", false)
     }
 
     const { data: processosSalvos, error: salvarError } = await supabase
@@ -273,13 +269,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Erro ao salvar processos" }, { status: 500 })
     }
 
-    console.log(`✅ ${processosSalvos?.length || 0} processos salvos no banco de dados`)
+    console.log(`✅ ${processosSalvos?.length || 0} processos trabalhistas salvos no banco de dados`)
 
     return NextResponse.json({
       empresa,
+      cliente: {
+        nome: cliente.nome,
+        email: cliente.email,
+      },
       processos: processosSalvos,
       fonte: apiSuccess ? "escavador" : "simulado",
-      message: apiMessage || `${processosSalvos?.length || 0} processos processados com sucesso`,
+      message: apiMessage || `${processosSalvos?.length || 0} processos trabalhistas processados com sucesso`,
       warning: !apiSuccess ? "Os dados exibidos são simulados para demonstração" : undefined,
     })
   } catch (error) {
