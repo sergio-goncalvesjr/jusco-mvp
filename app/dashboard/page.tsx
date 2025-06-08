@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Building2, LogOut, Archive, RefreshCw, CheckCircle, Briefcase } from "lucide-react"
+import { LoadingScreen } from "@/components/loading-screen"
 
 interface Processo {
   id: number
@@ -66,6 +67,7 @@ export default function DashboardPage() {
       buscarProcessos()
     } catch (error) {
       console.error("Erro ao carregar dados do usuário:", error)
+      localStorage.removeItem("user") // Limpar dados corrompidos
       router.push("/login")
     }
   }, [router])
@@ -80,6 +82,7 @@ export default function DashboardPage() {
 
       if (!response.ok) {
         if (response.status === 401) {
+          localStorage.removeItem("user")
           router.push("/login")
           return
         }
@@ -89,6 +92,7 @@ export default function DashboardPage() {
       setResultado(data)
       setProcessos(data.processos || [])
     } catch (error) {
+      console.error("Erro ao buscar processos:", error)
       setErro(error instanceof Error ? error.message : "Erro desconhecido")
     } finally {
       setLoadingProcessos(false)
@@ -118,9 +122,10 @@ export default function DashboardPage() {
       // Remover processo da lista
       setProcessos((prev) => prev.filter((p) => p.id !== processoId))
 
-      // Mostrar mensagem de sucesso (você pode implementar um toast aqui)
+      // Mostrar mensagem de sucesso
       alert("Processo arquivado com sucesso!")
     } catch (error) {
+      console.error("Erro ao arquivar processo:", error)
       alert(error instanceof Error ? error.message : "Erro ao arquivar processo")
     }
   }
@@ -132,34 +137,36 @@ export default function DashboardPage() {
 
   const formatarData = (data: string | null) => {
     if (!data) return "N/A"
-    return new Date(data).toLocaleDateString("pt-BR")
+    try {
+      return new Date(data).toLocaleDateString("pt-BR")
+    } catch {
+      return "Data inválida"
+    }
   }
 
   const formatarValor = (valor: number | null) => {
     if (!valor) return "N/A"
-    return new Intl.NumberFormat("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    }).format(valor)
+    try {
+      return new Intl.NumberFormat("pt-BR", {
+        style: "currency",
+        currency: "BRL",
+      }).format(valor)
+    } catch {
+      return "Valor inválido"
+    }
   }
 
   const formatarCNPJ = (cnpj: string) => {
+    if (!cnpj) return "N/A"
     return cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")
   }
 
   if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-        <div className="flex items-center gap-2">
-          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-          <span className="text-gray-600">Carregando...</span>
-        </div>
-      </div>
-    )
+    return <LoadingScreen message="Carregando dashboard..." />
   }
 
   if (!user) {
-    return null
+    return <LoadingScreen message="Verificando autenticação..." />
   }
 
   return (

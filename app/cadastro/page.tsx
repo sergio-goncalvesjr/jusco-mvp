@@ -101,7 +101,13 @@ export default function CadastroPage() {
         router.push("/login")
       }, 3000)
     } catch (error) {
-      setErro(error instanceof Error ? error.message : "Erro desconhecido")
+      console.error("Erro completo:", error)
+
+      if (error instanceof Error) {
+        setErro(error.message)
+      } else {
+        setErro("Erro desconhecido durante o cadastro")
+      }
     } finally {
       setLoading(false)
     }
@@ -235,7 +241,11 @@ export default function CadastroPage() {
 
             {erro && (
               <div className="p-3 bg-red-50 border border-red-200 rounded-md">
+                <p className="text-red-600 text-sm font-medium">Erro no cadastro:</p>
                 <p className="text-red-600 text-sm">{erro}</p>
+                <p className="text-red-500 text-xs mt-1">
+                  Se o problema persistir, verifique se as tabelas do banco foram criadas corretamente.
+                </p>
               </div>
             )}
 

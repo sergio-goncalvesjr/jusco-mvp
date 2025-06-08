@@ -4,8 +4,8 @@ import type React from "react"
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
-import { Loader2 } from "lucide-react"
 import type { Processo, Empresa } from "@/lib/types"
+import { LoadingScreen } from "@/components/loading-screen"
 
 interface BuscaResponse {
   empresa: Empresa
@@ -169,12 +169,5 @@ export default function Home() {
     }).format(valor / 100)
   }
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-      <div className="flex items-center gap-2">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
-        <span className="text-gray-600">Redirecionando...</span>
-      </div>
-    </div>
-  )
+  return <LoadingScreen message="Redirecionando..." />
 }

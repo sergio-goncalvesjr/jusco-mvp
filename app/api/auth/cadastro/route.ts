@@ -1,6 +1,13 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import axios from "axios"
+import { createClient as createSupabaseAdminClient } from "@supabase/supabase-js"
+
+// Cliente Supabase com Service Role Key (para bypass do RLS)
+const supabaseAdmin = createSupabaseAdminClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
 
 interface CadastroData {
   email: string
@@ -32,12 +39,10 @@ export async function POST(request: NextRequest) {
     const body: CadastroData = await request.json()
     const { email, password, nome, cnpj, telefone } = body
 
-    // Validações básicas
     if (!email || !password || !nome || !cnpj) {
       return NextResponse.json({ error: "Todos os campos obrigatórios devem ser preenchidos" }, { status: 400 })
     }
 
-    // Limpar CNPJ
     const cnpjLimpo = cnpj.replace(/[^\d]/g, "")
     if (cnpjLimpo.length !== 14) {
       return NextResponse.json({ error: "CNPJ deve ter 14 dígitos" }, { status: 400 })
@@ -45,14 +50,12 @@ export async function POST(request: NextRequest) {
 
     const supabase = await createClient()
 
-    // Verificar se CNPJ já está cadastrado
     const { data: cnpjExistente } = await supabase.from("clientes").select("id").eq("cnpj", cnpjLimpo).single()
 
     if (cnpjExistente) {
       return NextResponse.json({ error: "Este CNPJ já está cadastrado no sistema" }, { status: 400 })
     }
 
-    // Buscar dados da empresa na API do Escavador
     let dadosEmpresa = {
       nome: "",
       razao_social: "",
@@ -62,8 +65,6 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-      console.log(`🔍 Buscando dados da empresa para CNPJ: ${cnpjLimpo}`)
-
       const escavadorResponse = await axios.get(`https://api.escavador.com/api/v1/pessoas/juridica/${cnpjLimpo}`, {
         headers: {
           Authorization: `Bearer ${process.env.ESCAVADOR_TOKEN}`,
@@ -85,31 +86,23 @@ export async function POST(request: NextRequest) {
           telefone_empresa: empresa.dados.telefone || "",
           email_empresa: empresa.dados.email || "",
         }
-        console.log(`✅ Dados da empresa encontrados: ${dadosEmpresa.nome}`)
       }
     } catch (escavadorError) {
-      console.error("⚠️ Erro ao buscar dados da empresa no Escavador:", escavadorError)
-      // Continua com dados básicos
+      console.error("Erro ao buscar dados da empresa no Escavador:", escavadorError)
       dadosEmpresa.nome = `Empresa ${cnpjLimpo}`
     }
 
-    // Criar usuário no Supabase Auth
     const { data: authData, error: authError } = await supabase.auth.signUp({
       email,
       password,
     })
 
-    if (authError) {
-      console.error("Erro ao criar usuário:", authError)
-      return NextResponse.json({ error: "Erro ao criar conta: " + authError.message }, { status: 400 })
+    if (authError || !authData.user) {
+      return NextResponse.json({ error: "Erro ao criar conta: " + (authError?.message || "Usuário inválido") }, { status: 400 })
     }
 
-    if (!authData.user) {
-      return NextResponse.json({ error: "Erro ao criar usuário" }, { status: 400 })
-    }
-
-    // Criar cliente na tabela clientes
-    const { data: cliente, error: clienteError } = await supabase
+    // 🔐 Usando supabaseAdmin para inserir com Service Role (bypass no RLS)
+    const { data: cliente, error: clienteError } = await supabaseAdmin
       .from("clientes")
       .insert({
         id: authData.user.id,
@@ -124,13 +117,21 @@ export async function POST(request: NextRequest) {
 
     if (clienteError) {
       console.error("Erro ao criar cliente:", clienteError)
-      // Tentar deletar o usuário criado no auth
-      await supabase.auth.admin.deleteUser(authData.user.id)
-      return NextResponse.json({ error: "Erro ao criar perfil do cliente" }, { status: 500 })
+
+      try {
+        await supabase.auth.admin.deleteUser(authData.user.id)
+        console.log("Usuário deletado após erro de cliente")
+      } catch (deleteError) {
+        console.error("Erro ao deletar usuário:", deleteError)
+      }
+
+      return NextResponse.json(
+        { error: `Erro ao criar perfil do cliente: ${clienteError.message}`, details: clienteError.details },
+        { status: 500 },
+      )
     }
 
-    // Criar empresa associada ao cliente
-    const { data: empresa, error: empresaError } = await supabase
+    const { data: empresa, error: empresaError } = await supabaseAdmin
       .from("empresas")
       .insert({
         cnpj: cnpjLimpo,
